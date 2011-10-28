@@ -135,10 +135,12 @@ class DownloadThread(Thread):
             if b.geturl()[-4:] == ".htm":
                 response = login(b)
             
-            filenames = (re.findall(r"/[^/]*?.nc\?", b.geturl()) +
-                         re.findall(r"/[^/]*?.nc", b.geturl()))
+            # filenames = (re.findall(r"/[^/]*?.nc\?", b.geturl()) +
+            #              re.findall(r"/[^/]*?.nc", b.geturl()))
             
             filename = b.geturl().split("/")[-1].split("?")[0]
+            if not filename[-3:] == ".nc":
+                raise Exception("Download target " + filename + " is not a .nc file.")
             exists = False
             for data_store in DATA_STORES:
                 if os.path.exists(data_store + this_file[0] + filename):
