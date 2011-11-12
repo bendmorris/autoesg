@@ -16,6 +16,7 @@ import re
 import shutil
 import sys
 import time
+from urllib2 import URLError
 from getpass import getpass
 import mechanize
 from config import *
@@ -61,10 +62,11 @@ if PASSWORD == None:
     PASSWORD = getpass()
 
 def dir_fill(path):
+    make_dirs(path)
     try:
         f = os.statvfs(path).f_bfree
-        a = os.statvfs(path).f_bavail
-        return float(f - a) / a
+        a = os.statvfs(path).f_blocks
+        return float(a - f) / a
     except:
         return 1.0
     
@@ -82,20 +84,21 @@ def make_dirs(path):
         pass
 
 log_file = open(LOG_FILE, "a")
+downloads_started = set()
 output_lock = Lock()
 finished_lock = Lock()
+downloads_started_lock = Lock()
 
 
 class Logger:
     def write(self, t):
         output_lock.acquire()
-        if t.strip() and t != "\n":
+        if t.replace("\n", "").strip():
             message = time.strftime('%x %X ') + t + "\n"
             sys.__stdout__.write(message)
             sys.__stdout__.flush()
-            if len(t) > 0 and not t[0] == "*":
-                log_file.write(message)
-                log_file.flush()
+            log_file.write(message)
+            log_file.flush()
         output_lock.release()
     def flush(self):pass
         
@@ -107,6 +110,7 @@ class DownloadThread(Thread):
         self.this_file = this_file
         self._started = False
         self._finished = False
+        self._downloading = False
         self.finished_log = finished_log
         self.downloaded = 0
         self.temp_file_path = None
@@ -114,6 +118,9 @@ class DownloadThread(Thread):
 
     def started(self):
         return self._started
+        
+    def downloading(self):
+        return self._downloading
         
     def finished(self):
         return self._finished
@@ -133,7 +140,7 @@ class DownloadThread(Thread):
                 
             response = b.open(this_file[1])
             if b.geturl()[-4:] == ".htm":
-                response = login(b)
+                response = self.login(time.time())
             
             # filenames = (re.findall(r"/[^/]*?.nc\?", b.geturl()) +
             #              re.findall(r"/[^/]*?.nc", b.geturl()))
@@ -141,19 +148,28 @@ class DownloadThread(Thread):
             filename = b.geturl().split("/")[-1].split("?")[0]
             if not filename[-3:] == ".nc":
                 raise Exception("Download target " + filename + " is not a .nc file.")
-            exists = False
-            for data_store in DATA_STORES:
-                if os.path.exists(data_store + this_file[0] + filename):
-                    exists = data_store + this_file[0]
+            downloads_started_lock.acquire()
+            exists = filename in downloads_started
+            downloads_started_lock.release()
+            if not exists:
+                for data_store in DATA_STORES:
+                    if os.path.exists(data_store + this_file[0] + filename):
+                        exists = data_store + this_file[0]
             if exists:
                 print str(self.n) + ": " + filename + " already exists at " + exists
             else:
+                downloads_started_lock.acquire()
+                downloads_started.add(filename)
+                downloads_started_lock.release()            
                 path = download_path + filename
                 nds = next_data_store()
                 self.temp_file_path = next_data_store()
                 make_dirs(self.temp_file_path)
                 self.temp_file_path += "temp." + str(self.n)
                 save_file = open(self.temp_file_path, "wb")
+                self._downloading = True
+                
+                response = response.wrapped.fp
                 data = response.read(1024)
                 print str(self.n) + ": Downloading " + filename + " to " + download_path + " ..."
                 while len(data):
@@ -177,30 +193,77 @@ class DownloadThread(Thread):
         b.close()
         self._finished = True        
         
-            
-def login(b):
-    b.select_form(nr=0)
-    first_input = b.forms().next().find_control(type="text").pairs()[0][0]
-    if first_input == "j_username":
-        b["j_username"] = USERNAME
-        b["j_password"] = PASSWORD
-        return b.submit()
-    elif first_input == "openid_identifier":
-        b["openid_identifier"] = OPENID
-        b.submit()
-        b.select_form(nr=0)
-        #first_input = b.forms().next().pairs()[0][0]
-        b["j_password"] = PASSWORD
+        
+    def first_form_control(self, form_number=0):
+        b = self.browser
+        b.select_form(nr=form_number)
+        forms = b.forms()
         try:
-            r = b.submit()
-            return r
+            for i in range(form_number + 1):
+                form = forms.next()
+            try:
+                return form.find_control(type="text").pairs()[0][0]
+            except:
+                return form.find_control(type="password").pairs()[0][0]
+        except StopIteration:
+            return ""
+            
+            
+    def submit(self):
+        try:
+            self.browser.submit()
         except:
-            b.select_form(nr=0)
-            b["openid_identifier"] = OPENID
-            b.submit()
-            b.select_form(nr=0)
-            b["j_password"] = PASSWORD
-            return b.submit()
+            pass
+        
+            
+    def login(self, start_time, attempts=0, timeout=120):
+        if attempts >= 10:
+            raise Exception("Too many attempts to log in.")
+    
+        b = self.browser
+        
+        if time.time() - start_time > timeout:
+            raise Exception("Login timed out.")
+        filename = b.geturl().split("/")[-1].split("?")[0]
+
+        try:
+            if filename[-3:] == ".nc":
+                return b.response()
+            else:
+                try:
+                    first_input = self.first_form_control()
+                    if first_input == "j_username":
+                        #b["j_username"] = USERNAME
+                        #b["j_password"] = PASSWORD
+                        first_input = self.first_form_control(1)
+                        #self.submit()
+                    if first_input == "openid_identifier":
+                        b["openid_identifier"] = OPENID
+                        #print "openid=" + OPENID
+                        self.submit()
+                    if first_input == "j_password":
+                        b["j_password"] = PASSWORD
+                        #print PASSWORD
+                        self.submit()
+                    #else:
+                        #raise Exception("Login failed, reached page " + filename)
+                except mechanize._mechanize.FormNotFoundError:
+                    b.open(self.this_file[1])
+                    
+            filename = b.geturl().split("/")[-1].split("?")[0]
+            if filename[-3] == ".nc":
+                return b.response()
+            else:
+                return self.login(start_time, attempts=attempts+1)
+
+
+        except URLError as e:
+            #print "urlerror"
+            filename = b.geturl().split("/")[-1].split("?")[0]
+            if filename == "home.htm":
+                b.open(self.this_file[1])
+            return self.login(start_time, attempts=attempts+1)
+        
             
     
 def wait(waittime):
@@ -257,6 +320,7 @@ def main():
             done = len(finished_threads)
             
             running = len([t for t in threads if t.started() and not t.finished()])
+            downloading = len([t for t in threads if t.downloading() and not t.finished()])
             
             for t in threads:
                 if t.started() and not t.finished():
@@ -272,8 +336,8 @@ def main():
 
             if loops % 6 == 0:
                 elapsed_time = time.time() - start_time
-                print ("Downloading " + str(running) + " of " + str(len(threads) - done) + " files, " +
-                       ("%.2f" % (total_size / (elapsed_time * (1024 ** 2)))) + " MB/sec")        
+                print ("Downloading " + str(downloading) + " of " + str(len(threads) - done) + " files, " +
+                       ("%.2f" % (total_size / (elapsed_time * (1000 ** 2)))) + " MB/sec")        
                 start_time = time.time()
                 total_size = 0
                 loops = 0
