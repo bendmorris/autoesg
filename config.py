@@ -9,6 +9,8 @@ DATA_STORES = [l + "/Databank/" for l in
                 "/export8_2", 
                 "/export8_3",
                 "/export8_4",
+                "/export12_1",
+                "/export12_2",
                ]
               ]
 SERVERS = {

@@ -126,6 +126,7 @@ class DownloadThread(Thread):
         return self._finished
         
     def start(self):
+        print str(self.n) + ": " + str(self.this_file[0]) + " started."
         self._started = True
         self.browser = mechanize.Browser(history=NoHistory())
         self.browser.set_handle_robots(False)
@@ -190,8 +191,8 @@ class DownloadThread(Thread):
             print str(self.n) + ": " + str(this_file)
             print str(self.n) + ": " + str(e)
 
-        b.close()
-        self._finished = True        
+        self._finished = True
+        b.close()        
         
         
     def first_form_control(self, form_number=0):
@@ -314,7 +315,7 @@ def main():
         start_time = time.time()
         loops = 0
         total_size = 0
-        while done < n:
+        while threads:
             loops += 1
             finished_threads = [t for t in threads if t.finished()]
             done = len(finished_threads)
@@ -337,7 +338,7 @@ def main():
             if loops % 6 == 0:
                 elapsed_time = time.time() - start_time
                 print ("Downloading " + str(downloading) + " of " + str(len(threads) - done) + " files, " +
-                       ("%.2f" % (total_size / (elapsed_time * (1000 ** 2)))) + " MB/sec")        
+                       ("%.2f" % (total_size / (elapsed_time * (1000 ** 2)))) + " MB/sec")
                 start_time = time.time()
                 total_size = 0
                 loops = 0
